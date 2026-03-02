@@ -12,7 +12,7 @@ from __future__ import annotations
 import os, sys, re, csv, json, gzip, base64
 from pathlib import Path
 from typing import Iterable, List, Dict, Tuple, Optional, Set
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, urljoin
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, urljoin, quote
 
 def _dbg(msg: str) -> None:
     print(f"[phase1_addons] {msg}", file=sys.stderr)
