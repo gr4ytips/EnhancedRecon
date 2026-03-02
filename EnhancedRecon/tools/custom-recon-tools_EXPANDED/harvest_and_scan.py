@@ -829,103 +829,190 @@ async def download_url(
     host_gate: HostRateGate,
     write_headers: bool,
     interesting_exts: Set[str],
+    allowed_domains: Set[str],
+    exclude_url_rules,
+    max_redirects: int = 5,
 ) -> bool:
+    def _host_ok(h: str) -> bool:
+        if not h:
+            return False
+        h = h.strip().rstrip(".")
+        if not h:
+            return False
+        if h.startswith(".") or ".." in h:
+            return False
+        try:
+            h.encode("idna").decode("ascii")
+        except Exception:
+            return False
+        return True
+
     async with sem:
-        host = urllib.parse.urlparse(url).hostname or ""
         attempts = 0
         while attempts <= max_retries:
             attempts += 1
-            await asyncio.sleep(1.0 / max(0.01, rps))
-            await host_gate.wait(host)
-            t0 = time.perf_counter()
-            try:
-                log.debug(f"GET start url={url} attempt={attempts}")
-                async with session.get(url, headers={"User-Agent": user_agent}, timeout=timeout_s) as resp:
-                    if respect_retry_after and resp.status in (429, 503):
-                        ra = parse_retry_after(resp.headers.get("Retry-After", ""))
-                        xrl = parse_xrl_reset(resp.headers.get("X-RateLimit-Reset", ""))
-                        wait_s = ra if ra is not None else xrl
-                        if wait_s is not None:
-                            wait_s = min(max(0.0, wait_s), float(retry_after_cap)) + random.random()
-                            log.warning(f"Rate limited: status={resp.status} url={url} waiting {wait_s:.2f}s")
-                            await host_gate.push_back(host, wait_s)
-                            if attempts > max_retries:
+
+            cur_url = url
+            redirects = 0
+
+            while True:
+                host = urllib.parse.urlparse(cur_url).hostname or ""
+                if not _host_ok(host):
+                    log.warning(
+                        f"FAIL (non-retryable) url={url} err=invalid-host({host}) "
+                        f"attempt={attempts}"
+                    )
+                    return False
+
+                await asyncio.sleep(1.0 / max(0.01, rps))
+                await host_gate.wait(host)
+                t0 = time.perf_counter()
+
+                try:
+                    log.debug(f"GET start url={cur_url} attempt={attempts} redirects={redirects}")
+
+                    async with session.get(
+                        cur_url,
+                        headers={"User-Agent": user_agent},
+                        timeout=timeout_s,
+                        allow_redirects=False,
+                    ) as resp:
+
+                        # Manual redirect handling (scope-guarded)
+                        if resp.status in (301, 302, 303, 307, 308):
+                            loc = resp.headers.get("Location", "") or ""
+                            if not loc:
+                                log.info(
+                                    f"SKIP redirect(no-location) url={cur_url} status={resp.status} "
+                                    f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
+                                )
                                 return False
-                            await asyncio.sleep(wait_s)
-                            continue
 
-                    headers = "".join(f"{k}: {v}\n" for k, v in resp.headers.items())
-                    ext = guess_ext_from_headers(headers)
-                    if ext == ".txt":
-                        ext = guess_ext_from_url(str(resp.url) or url)
+                            if redirects >= max_redirects:
+                                log.info(
+                                    f"SKIP redirect(max) url={cur_url} status={resp.status} "
+                                    f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
+                                )
+                                return False
 
-                    # NEW: if still .txt, but URL suffix is interesting (e.g., .pdf), use it
-                    if ext == ".txt":
-                        try:
-                            path_ext = os.path.splitext(urllib.parse.urlparse(str(resp.url) or url).path)[1].lower()
-                            if path_ext in interesting_exts:
-                                ext = path_ext
-                        except Exception:
-                            pass    
+                            # Resolve next URL (absolute)
+                            base = str(resp.url) or cur_url
+                            nxt = urllib.parse.urljoin(base, loc)
 
-                    if ext not in interesting_exts:
-                        log.info(f"SKIP uninteresting type ext={ext} url={url} status={resp.status} attempt={attempts}")
-                        return False
+                            # Normalize + scope guard
+                            nxt_norm = normalize_url_line(nxt) or ""
+                            if not nxt_norm:
+                                log.info(f"SKIP redirect(bad-url) url={cur_url} -> {nxt!r}")
+                                return False
 
-                    body = await resp.read()
-                    if len(body) > max_size:
-                        log.info(
-                            f"SKIP size>{max_size} url={url} status={resp.status} len={len(body)} "
-                            f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
-                        )
+                            nxt_host = urllib.parse.urlparse(nxt_norm).hostname or ""
+                            if not _host_ok(nxt_host):
+                                log.info(f"SKIP redirect(invalid-host) url={cur_url} -> {nxt_norm}")
+                                return False
+
+                            if not in_scope(nxt_norm, allowed_domains):
+                                log.info(f"SKIP off-scope redirect url={cur_url} -> {nxt_norm}")
+                                return False
+
+                            if excluded_by_url_rules(nxt_norm, exclude_url_rules):
+                                log.info(f"SKIP redirect(excluded-by-rule) url={cur_url} -> {nxt_norm}")
+                                return False
+
+                            redirects += 1
+                            cur_url = nxt_norm
+                            continue  # follow redirect (still in-scope)
+
+                        # Rate-limit handling on final response
+                        if respect_retry_after and resp.status in (429, 503):
+                            ra = parse_retry_after(resp.headers.get("Retry-After", ""))
+                            xrl = parse_xrl_reset(resp.headers.get("X-RateLimit-Reset", ""))
+                            wait_s = ra if ra is not None else xrl
+                            if wait_s is not None:
+                                wait_s = min(max(0.0, wait_s), float(retry_after_cap)) + random.random()
+                                log.warning(f"Rate limited: status={resp.status} url={cur_url} waiting {wait_s:.2f}s")
+                                await host_gate.push_back(host, wait_s)
+                                if attempts > max_retries:
+                                    return False
+                                await asyncio.sleep(wait_s)
+                                break  # retry outer attempt loop
+
+                        headers = "".join(f"{k}: {v}\n" for k, v in resp.headers.items())
+                        ext = guess_ext_from_headers(headers)
+                        if ext == ".txt":
+                            ext = guess_ext_from_url(str(resp.url) or cur_url)
+
+                        # If still .txt but URL suffix is interesting, use it
+                        if ext == ".txt":
+                            try:
+                                path_ext = os.path.splitext(urllib.parse.urlparse(str(resp.url) or cur_url).path)[1].lower()
+                                if path_ext in interesting_exts:
+                                    ext = path_ext
+                            except Exception:
+                                pass
+
+                        if ext not in interesting_exts:
+                            log.info(f"SKIP uninteresting type ext={ext} url={cur_url} status={resp.status} attempt={attempts}")
+                            return False
+
+                        body = await resp.read()
+                        if len(body) > max_size:
+                            log.info(
+                                f"SKIP size>{max_size} url={cur_url} status={resp.status} len={len(body)} "
+                                f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
+                            )
+                            if write_headers:
+                                fname = safe_filename(str(resp.url) or cur_url)
+                                hdr_path = Path(harvest_dir) / f"{fname}.hdr"
+                                async with aiofiles.open(hdr_path, "w") as f:
+                                    await f.write(headers + f"NOTE: skipped due to size>{max_size}\n")
+                            return False
+
+                        final_url = str(resp.url) or cur_url
+                        fname = safe_filename(final_url)
+                        body_path = Path(harvest_dir) / f"{fname}{ext}"
+
+                        # Sidecar URL
+                        url_path = Path(harvest_dir) / f"{fname}.url"
+                        async with aiofiles.open(url_path, "w") as f:
+                            await f.write(final_url)
+
                         if write_headers:
-                            fname = safe_filename(str(resp.url) or url)
                             hdr_path = Path(harvest_dir) / f"{fname}.hdr"
                             async with aiofiles.open(hdr_path, "w") as f:
-                                await f.write(headers + f"NOTE: skipped due to size>{max_size}\n")
+                                await f.write(headers)
+
+                        async with aiofiles.open(body_path, "wb") as f:
+                            await f.write(body)
+
+                        log.info(
+                            f"OK url={url} status={resp.status} len={len(body)} ext={ext} "
+                            f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts} -> {body_path.name}"
+                        )
+                        return True
+
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    if attempts > max_retries:
+                        log.warning(
+                            f"FAIL (no retries left) url={url} err={e} "
+                            f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
+                        )
                         return False
-
-                    fname = safe_filename(str(resp.url) or url)
-                    body_path = Path(harvest_dir) / f"{fname}{ext}"
-
-                    # Sidecar URL for later map resolution
-                    url_path = Path(harvest_dir) / f"{fname}.url"
-                    async with aiofiles.open(url_path, "w") as f:
-                        await f.write(str(resp.url))
-
-                    if write_headers:
-                        hdr_path = Path(harvest_dir) / f"{fname}.hdr"
-                        async with aiofiles.open(hdr_path, "w") as f:
-                            await f.write(headers)
-
-                    async with aiofiles.open(body_path, "wb") as f:
-                        await f.write(body)
-
-                    log.info(
-                        f"OK url={url} status={resp.status} len={len(body)} ext={ext} "
-                        f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts} -> {body_path.name}"
-                    )
-                    return True
-
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                if attempts > max_retries:
+                    sleep_s = min(2 ** attempts, backoff_cap) + random.random()
                     log.warning(
-                        f"FAIL (no retries left) url={url} err={e} "
+                        f"Transient error url={url} err={e} attempt={attempts}/{max_retries} "
+                        f"backing off {sleep_s:.2f}s"
+                    )
+                    await asyncio.sleep(sleep_s)
+                    break  # retry outer attempt loop
+
+                except Exception as e:
+                    log.warning(
+                        f"FAIL (non-retryable) url={url} err={e} "
                         f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
                     )
                     return False
-                sleep_s = min(2 ** attempts, backoff_cap) + random.random()
-                log.warning(
-                    f"Transient error url={url} err={e} attempt={attempts}/{max_retries} "
-                    f"backing off {sleep_s:.2f}s"
-                )
-                await asyncio.sleep(sleep_s)
-            except Exception as e:
-                log.warning(
-                    f"FAIL (non-retryable) url={url} err={e} "
-                    f"elapsed_ms={int((time.perf_counter()-t0)*1000)} attempt={attempts}"
-                )
-                return False
+
+        return False
 
 # ---------------------------
 # URL analysis (pre-harvest) - writes <out>/analysis/*
@@ -2659,6 +2746,8 @@ async def _run_pipeline_for_single_domain(
                 host_gate=host_gate,
                 write_headers=(args.write_headers == "yes"),
                 interesting_exts=interesting_exts,
+                allowed_domains=allowed,
+                exclude_url_rules=exclude_url_rules,
             )
             for u in urls
         ]
