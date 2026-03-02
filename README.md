@@ -75,10 +75,11 @@ If you used **Option A**, you are already in the right place.
 
 From **program root** (`EnhancedRecon/EnhancedRecon`):
 
+chmod +x *.sh
+
 ```bash
 # Optional bootstrap (fresh Kali box):
 # - Installs go tooling + common deps quickly.
-# - You can skip this if you run the phase installers below (they install what they need).
 ./install_external_tools.sh
 
 # Phase installers (recommended):
