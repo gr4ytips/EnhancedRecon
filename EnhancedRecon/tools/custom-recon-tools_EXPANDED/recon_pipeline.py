@@ -1215,13 +1215,22 @@ def ct_certspotter(domain: str, out_file: Path) -> Set[str]:
 def github_subdomains(domain: str, ddir: Path, gh_subdomains: Optional[str]) -> Set[str]:
     out = ddir / "gh_subs.txt"
 
-    if not _bin_exists(gh_subdomains):
+    # Accept either an explicit path via --github-subdomains OR auto-discover from PATH.
+    gh_bin = (gh_subdomains or "").strip()
+    if not gh_bin:
+        try:
+            import shutil
+            gh_bin = shutil.which("github-subdomains") or ""
+        except Exception:
+            gh_bin = ""
+
+    if not _bin_exists(gh_bin):
         write_text(out, "")
         log.info("[%s] github-subdomains: skipped (no CLI path)", domain)
         return set()
 
     env_token = os.environ.get("GITHUB_TOKEN", "")
-    cmd = [gh_subdomains, "-d", domain]
+    cmd = [gh_bin, "-d", domain]
     if env_token:
         cmd += ["-t", env_token]
 
@@ -1239,8 +1248,10 @@ def github_subdomains(domain: str, ddir: Path, gh_subdomains: Optional[str]) -> 
 
     junk = ddir / f"{domain}.txt"
     if junk.exists():
-        try: junk.unlink()
-        except: pass
+        try:
+            junk.unlink()
+        except Exception:
+            pass
 
     return subs
 
