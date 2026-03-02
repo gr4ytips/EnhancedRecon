@@ -23,6 +23,11 @@ fi
 TOOLS="${TOOLS:-$ROOT/tools/custom-recon-tools_EXPANDED}"
 PHASE2_OUTPUT_ROOT="${PHASE2_OUTPUT_ROOT:-$ROOT/passive_enum_phase1/phase1_iter_1_phase2}"
 
+# Go tools policy: ALWAYS use ~/go/bin
+GOBIN_DIR="${GOBIN_DIR:-$HOME/go/bin}"
+export PATH="$GOBIN_DIR:$PATH"
+export GOBIN_DIR
+
 # Prefer EXACT host allowlist (Phase0/Phase1 model). Then prefer Phase1 scoped list. Then fallback to seeds.
 ALLOWED_FILE="${ALLOWED_FILE:-$ROOT/allowed_exact_hosts.txt}"
 if [[ ! -f "$ALLOWED_FILE" ]]; then
@@ -40,6 +45,7 @@ echo " ROOT      : $ROOT"
 echo " TOOLS     : $TOOLS"
 echo " INPUT     : $PHASE2_OUTPUT_ROOT"
 echo " ALLOWED   : $ALLOWED_FILE"
+echo " GOBIN_DIR : $GOBIN_DIR"
 echo "======================================================="
 
 [[ -d "$PHASE2_OUTPUT_ROOT" ]] || { echo "❌ Phase2 output not found: $PHASE2_OUTPUT_ROOT" >&2; exit 1; }
@@ -47,6 +53,15 @@ echo "======================================================="
 [[ -f "$TOOLS/phase3_offline.EXACTSCOPE.py" ]] || { echo "❌ Missing: $TOOLS/phase3_offline.EXACTSCOPE.py" >&2; exit 1; }
 [[ -f "$TOOLS/meta_offline_enrich_enhanced.EXACTSCOPE.py" ]] || { echo "❌ Missing: $TOOLS/meta_offline_enrich_enhanced.EXACTSCOPE.py" >&2; exit 1; }
 [[ -f "$ALLOWED_FILE" ]] || { echo "❌ Allowed file not found: $ALLOWED_FILE" >&2; exit 1; }
+
+# REQUIRED for ReconAggregator ingestion: gitleaks + osv-scanner
+[[ -x "$GOBIN_DIR/gitleaks" ]] || { echo "❌ Missing required: $GOBIN_DIR/gitleaks (run phase3_install.sh)" >&2; exit 1; }
+[[ -x "$GOBIN_DIR/osv-scanner" ]] || { echo "❌ Missing required: $GOBIN_DIR/osv-scanner (run phase3_install.sh)" >&2; exit 1; }
+
+# Run Phase3 precheck if available (no sudo, safe)
+if [[ -f "$ROOT/phase3_precheck.sh" ]]; then
+  bash "$ROOT/phase3_precheck.sh" >/dev/null
+fi
 
 # Step 1: Offline intelligence
 echo ">>> [Step 1/2] Clusters / Params / Then-vs-Now / Findings / Offline Secrets+Deps"

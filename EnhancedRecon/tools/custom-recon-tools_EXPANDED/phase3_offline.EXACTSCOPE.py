@@ -25,7 +25,7 @@ STRICTLY OFFLINE: reads only Phase-1/2 artifacts + local source trees; never tou
 """
 
 from __future__ import annotations
-import argparse, sys, re, json, csv, time, subprocess, shutil
+import argparse, sys, re, json, csv, time, subprocess, shutil, os
 from pathlib import Path
 from urllib.parse import urlparse, parse_qsl
 from typing import Dict, List, Set, Tuple, Optional
@@ -59,8 +59,26 @@ def read_allowed(file: Path) -> set[str]:
     return out
 
 def which(binname: str) -> Optional[str]:
+    """Resolve binaries with policy-aware fallbacks.
+
+    Policy:
+      - Prefer PATH resolution (shutil.which)
+      - Then prefer ~/go/bin (or $GOBIN_DIR) for Go tools
+    """
+    if not binname:
+        return None
     p = shutil.which(binname)
-    return p if p else None
+    if p:
+        return p
+    gobin = os.environ.get("GOBIN_DIR") or str(Path.home() / "go" / "bin")
+    cand = Path(gobin) / binname
+    if cand.exists() and os.access(str(cand), os.X_OK):
+        return str(cand)
+    return None
+
+def _write_json(p: Path, obj) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
 # ----------------- URL utils -----------------
 WAYBACK_RX = re.compile(
@@ -523,37 +541,97 @@ Why it matters:
     dbg(f"{ddir.name}: created {created} evidence packs under offline/findings/")
     return created
 def run_trufflehog(root: Path, out_jsonl: Path) -> bool:
+    """Run TruffleHog filesystem scan.
+
+    TruffleHog CLI has changed across versions. We try the modern form first:
+      trufflehog filesystem [flags] <path>
+    and fall back to older variants.
+
+    Always emits an artifact (even if empty) so downstream ingestion is stable.
+    Returns True if the tool executed successfully (even with 0 findings).
+    """
     binp = which("trufflehog")
+    out_jsonl.parent.mkdir(parents=True, exist_ok=True)
     if not binp:
         dbg("trufflehog not found; skipping")
+        out_jsonl.write_text("", encoding="utf-8")
         return False
-    # trufflehog filesystem --no-update --json --path <dir>
-    try:
-        cp = subprocess.run([binp, "filesystem", "--no-update", "--json", "--path", str(root)],
-                            text=True, capture_output=True, timeout=1800)
-        if cp.stdout:
-            out_jsonl.parent.mkdir(parents=True, exist_ok=True)
-            out_jsonl.write_text(cp.stdout, encoding="utf-8")
-            return True
-    except Exception as e:
-        dbg(f"trufflehog error: {e}")
+
+    candidates = [
+        # Modern: filesystem <path>
+        [binp, "filesystem", "--no-update", "--json", str(root)],
+        # Some builds accept 'file' instead of 'filesystem'
+        [binp, "file", "--no-update", "--json", str(root)],
+        # Legacy: --path <dir>
+        [binp, "filesystem", "--no-update", "--json", "--path", str(root)],
+    ]
+
+    last_err = ""
+    for cmd in candidates:
+        try:
+            cp = subprocess.run(cmd, text=True, capture_output=True, timeout=1800)
+            # success is 0; treat 0 as success even if stdout empty
+            if cp.returncode == 0:
+                out_jsonl.write_text(cp.stdout or "", encoding="utf-8")
+                return True
+            last_err = (cp.stderr or cp.stdout or "").strip()
+        except Exception as e:
+            last_err = str(e)
+
+    if last_err:
+        dbg(f"trufflehog failed: {last_err[:300]}")
+    out_jsonl.write_text("", encoding="utf-8")
     return False
 
 def run_gitleaks(root: Path, out_json: Path) -> bool:
+    """Run Gitleaks scan over a directory (no git required).
+
+    Repo migration left some module-path mismatches, and CLI flags differ by version.
+    We try modern flags first, then fall back.
+
+    Always emits an artifact (even if empty) so downstream ingestion is stable.
+    Returns True if the tool executed successfully (even with 0 findings).
+    """
     binp = which("gitleaks")
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    # default empty JSON array
+    out_json.write_text("[]\n", encoding="utf-8")
+
     if not binp:
         dbg("gitleaks not found; skipping")
         return False
-    # gitleaks detect --no-git -s <dir> -f json -r <file>
-    try:
-        out_json.parent.mkdir(parents=True, exist_ok=True)
-        cp = subprocess.run([binp, "detect", "--no-git", "-s", str(root), "-f", "json", "-r", str(out_json)],
-                            text=True, capture_output=True, timeout=1800)
-        # gitleaks returns non-zero on findings sometimes; consider file presence as success
-        return out_json.exists() and out_json.stat().st_size > 0
-    except Exception as e:
-        dbg(f"gitleaks error: {e}")
-        return False
+
+    candidates = [
+        # Modern: --source / --report-format / --report-path
+        [binp, "detect", "--no-git", "--source", str(root), "--report-format", "json", "--report-path", str(out_json)],
+        # Modern alt: --report-format json --report-path
+        [binp, "detect", "--no-git", "--source", str(root), "--report-path", str(out_json), "--report-format", "json"],
+        # Legacy: -s / -f / -r
+        [binp, "detect", "--no-git", "-s", str(root), "-f", "json", "-r", str(out_json)],
+    ]
+
+    last_err = ""
+    for cmd in candidates:
+        try:
+            cp = subprocess.run(cmd, text=True, capture_output=True, timeout=1800)
+            # gitleaks may return 1 when findings are present; treat 0/1 as success
+            if cp.returncode in (0, 1):
+                # if tool didn't write report, but printed JSON to stdout, capture it
+                if (not out_json.exists()) or out_json.stat().st_size == 0:
+                    if cp.stdout and cp.stdout.lstrip().startswith(('[', '{')):
+                        out_json.write_text(cp.stdout, encoding='utf-8')
+                    else:
+                        out_json.write_text("[]\n", encoding="utf-8")
+                return True
+            last_err = (cp.stderr or cp.stdout or "").strip()
+        except Exception as e:
+            last_err = str(e)
+
+    if last_err:
+        dbg(f"gitleaks failed: {last_err[:300]}")
+    # keep empty artifact
+    out_json.write_text("[]\n", encoding="utf-8")
+    return False
 
 def redact_secret(val: str) -> str:
     val = val or ""
@@ -600,8 +678,10 @@ def consolidate_secrets(cc_dir: Path, uca_dir: Path, out_csv: Path, secrets_mode
         dbg("no cc_bodies/ or uca_src/ present; skipping secrets step")
         return 0
 
-    tmp_dir = out_csv.parent / "_tmp_secrets"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    # Stable per-domain artifacts for ReconAggregator ingestion
+    #   - analysis/offline/gitleaks_<root>.json
+    #   - analysis/offline/trufflehog_<root>.jsonl
+    out_dir = out_csv.parent
     truf_count = 0
     gitl_count = 0
 
@@ -609,7 +689,7 @@ def consolidate_secrets(cc_dir: Path, uca_dir: Path, out_csv: Path, secrets_mode
 
     for root in roots:
         # TruffleHog
-        tj = tmp_dir / f"trufflehog_{root.name}.jsonl"
+        tj = out_dir / f"trufflehog_{root.name}.jsonl"
         if run_trufflehog(root, tj):
             truf_count += 1
             for ln in read_lines(tj):
@@ -628,7 +708,7 @@ def consolidate_secrets(cc_dir: Path, uca_dir: Path, out_csv: Path, secrets_mode
                 except Exception:
                     continue
         # Gitleaks
-        gj = tmp_dir / f"gitleaks_{root.name}.json"
+        gj = out_dir / f"gitleaks_{root.name}.json"
         if run_gitleaks(root, gj):
             gitl_count += 1
             try:
@@ -677,6 +757,7 @@ def run_retirejs(uca_dir: Path, out_json: Path) -> bool:
     binp = which("retire")
     if not binp:
         dbg("retire.js not found; skipping")
+        _write_json(out_json, {"skipped": "retire_missing"})
         return False
     # retire --path <dir> --outputformat json --outputfile <file>
     try:
@@ -686,23 +767,31 @@ def run_retirejs(uca_dir: Path, out_json: Path) -> bool:
         return out_json.exists() and out_json.stat().st_size > 0
     except Exception as e:
         dbg(f"retire.js error: {e}")
+        _write_json(out_json, {"error": "retire_exception", "detail": str(e)})
         return False
 
 def run_osvscanner(uca_dir: Path, out_json: Path) -> bool:
     binp = which("osv-scanner")
     if not binp:
         dbg("osv-scanner not found; skipping")
+        _write_json(out_json, {"skipped": "osv_scanner_missing"})
         return False
     # osv-scanner --recursive <dir> --json
     try:
         out_json.parent.mkdir(parents=True, exist_ok=True)
         cp = subprocess.run([binp, "--recursive", str(uca_dir), "--json"],
                             text=True, capture_output=True, timeout=1800)
-        if cp.stdout:
+        if cp.stdout and cp.stdout.strip():
             out_json.write_text(cp.stdout, encoding="utf-8")
             return True
+        # No stdout: still emit artifact
+        if cp.returncode == 0:
+            _write_json(out_json, {"results": [], "note": "no_output"})
+            return True
+        _write_json(out_json, {"error": "osv_scanner_failed", "rc": cp.returncode, "stderr": (cp.stderr or "")[:2000]})
     except Exception as e:
         dbg(f"osv-scanner error: {e}")
+        _write_json(out_json, {"error": "osv_scanner_exception", "detail": str(e)})
     return False
 
 def consolidate_js_deps(uca_dir: Path, out_json: Path) -> int:
@@ -714,13 +803,17 @@ def consolidate_js_deps(uca_dir: Path, out_json: Path) -> int:
     dbg(f"JS deps scan root: {uca_dir}")
     if not uca_dir or not uca_dir.exists():
         dbg("uca_src/ not present; skipping JS deps step")
-        out_json.write_text(json.dumps({"retire": None, "osv": None}, indent=2), encoding="utf-8")
+        # Always emit stable artifacts for ReconAggregator
+        _write_json(out_json, {"retire": None, "osv": None, "note": "uca_src_missing"})
+        _write_json(out_json.parent / "retire_raw.json", {"skipped": "uca_src_missing"})
+        _write_json(out_json.parent / "osv_scanner_raw.json", {"skipped": "uca_src_missing"})
         return 0
 
-    tmp = out_json.parent / "_tmp_deps"
-    tmp.mkdir(parents=True, exist_ok=True)
-    rj = tmp / "retire.json"
-    oj = tmp / "osv.json"
+    # Stable per-domain artifacts:
+    #   - analysis/offline/retire_raw.json
+    #   - analysis/offline/osv_scanner_raw.json
+    rj = out_json.parent / "retire_raw.json"
+    oj = out_json.parent / "osv_scanner_raw.json"
 
     reti_ok = run_retirejs(uca_dir, rj)
     osv_ok  = run_osvscanner(uca_dir, oj)
@@ -737,7 +830,7 @@ def consolidate_js_deps(uca_dir: Path, out_json: Path) -> int:
         except Exception:
             result["osv"] = {"error": "parse"}
 
-    out_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    _write_json(out_json, result)
     dbg(f"wrote {out_json.name} (retire_ok={reti_ok}, osv_ok={osv_ok})")
     return (1 if reti_ok else 0) + (1 if osv_ok else 0)
 
