@@ -194,7 +194,7 @@ command -v skipfish     >/dev/null && echo "skipfish:     $(command -v skipfish)
 [ -x /usr/local/bin/httpx-pd ] && echo "httpx-pd:     /usr/local/bin/httpx-pd"
 
 echo
-echo "venv: $VENV_DIR (activate: source "$VENV_DIR/bin/activate")"
+echo "venv: $VENV_DIR (activate: source \"$VENV_DIR/bin/activate\")"
 echo "Tip: ensure PATH contains: \$HOME/go/bin  and  $VENV_DIR/bin"
 
 # ---------------------------------------------------------
@@ -264,6 +264,24 @@ rules:
     pattern-regex: '(?i)\bgh[pousr]_[A-Za-z0-9]{36,255}\b'
 YAML
   echo "    - Wrote default rules: $RULES_FILE"
+fi
+
+# ---------------------------------------------------------
+# UCA / code_analyzer offline semgrep ruleset (pre-download)
+# Prevents interactive prompt:
+#   ~/.local/share/code_analyzer/semgrep-rules
+# ---------------------------------------------------------
+UCA_SEMGREP_RULES_DIR="${UCA_SEMGREP_RULES_DIR:-$HOME/.local/share/code_analyzer/semgrep-rules}"
+mkdir -p "$(dirname "$UCA_SEMGREP_RULES_DIR")"
+
+echo "[*] Ensuring UCA offline semgrep ruleset exists: $UCA_SEMGREP_RULES_DIR"
+if [[ -d "$UCA_SEMGREP_RULES_DIR/.git" ]]; then
+  git -C "$UCA_SEMGREP_RULES_DIR" pull --ff-only || true
+elif [[ -d "$UCA_SEMGREP_RULES_DIR" ]] && ls -1 "$UCA_SEMGREP_RULES_DIR" >/dev/null 2>&1; then
+  echo "    - Found existing ruleset folder (non-git). Keeping as-is."
+else
+  git clone --depth 1 https://github.com/returntocorp/semgrep-rules "$UCA_SEMGREP_RULES_DIR" \
+    || echo "[WARN] Failed to download semgrep-rules. UCA may prompt/abort if semgrep scanning is enabled."
 fi
 
 echo "✅ phase2_install: done"
