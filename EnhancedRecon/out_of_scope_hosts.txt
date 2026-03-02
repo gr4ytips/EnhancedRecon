@@ -1,0 +1,4 @@
+# Examples of what to exclude if they appear in logs
+analytics.google.com
+fonts.googleapis.com
+github.com
