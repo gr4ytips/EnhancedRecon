@@ -1,0 +1,61 @@
+rules:
+  # 1. React/Vue Router - Hidden Admin Routes
+  - id: router-admin-routes
+    patterns:
+      - pattern-either:
+          - pattern: '<Route ... path="$PATH" ... />'
+          - pattern: '{path: "$PATH", ...}'
+      - metavariable-regex:
+          metavariable: '$PATH'
+          regex: '(?i)(/admin|/dashboard|/config|/superuser|/console)'
+    message: "High-Value Route detected: $PATH. Check if it's properly protected on the backend."
+    languages: [javascript, typescript, tsx, jsx]
+    severity: WARNING
+
+  # 2. Angular Auth Guards (Can often be bypassed)
+  - id: angular-can-activate
+    patterns:
+      - pattern: "canActivate: [...]"
+    message: "Angular Auth Guard detected. Review the guard logic for bypasses."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  # 3. Dangerous postMessage (Auth Theft Vector)
+  - id: unsafe-postmessage
+    patterns:
+      - pattern-inside: |
+          window.addEventListener('message', function($EVENT) { ... })
+      - pattern-not-inside: |
+          if ($EVENT.origin === '...') { ... }
+    message: "postMessage listener without clear origin check. Potential Auth Bypass/XSS."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # 4. Hardcoded Secrets (High Entropy)
+  - id: hardcoded-secret-high-entropy
+    patterns:
+      - pattern-either:
+          - pattern: "const $KEY = '$VAL'"
+          - pattern: "let $KEY = '$VAL'"
+      - metavariable-regex:
+          metavariable: '$KEY'
+          regex: '(?i)(api_key|token|secret|auth|password)'
+      - metavariable-regex:
+          metavariable: '$VAL'
+          regex: '[A-Za-z0-9+/=]{20,}'
+    message: "Hardcoded High-Entropy Secret found in variable $KEY."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # 5. Internal Dependency Candidates (Supply Chain)
+  - id: internal-dependency-leak
+    patterns:
+      - pattern-either:
+          - pattern: 'import ... from "$PKG"'
+          - pattern: 'require("$PKG")'
+    metavariable-regex:
+      metavariable: '$PKG'
+      regex: '^@[a-zA-Z0-9-_]+/'
+    message: "Scoped package import detected: $PKG. Check for Dependency Confusion."
+    languages: [javascript, typescript]
+    severity: INFO

@@ -1,0 +1,125 @@
+# =========================
+# System & OS
+# =========================
+.DS_Store
+Thumbs.db
+*~
+*.log
+
+# =========================
+# Java & Gradle (ReconAggregator)
+# =========================
+.gradle/
+build/
+target/
+*.class
+.kotlin
+
+# Keep Gradle wrapper JAR
+!gradle/wrapper/gradle-wrapper.jar
+# Allow nested build/out directories inside src/ just in case
+!**/src/main/**/build/
+!**/src/test/**/build/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+# =========================
+# IDEs (IntelliJ, Eclipse, VSCode, NetBeans)
+# =========================
+# IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+# Eclipse
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# VS Code
+.vscode/
+
+# =========================
+# Python (Recon Automation / EnhancedRecon)
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.tox/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+env/
+venv/
+.venv/
+
+# =========================
+# ReconAggregator local state
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+.ReconAggregator*.db
+
+# =========================
+# Recon Automation Outputs (CRITICAL: do not commit)
+# =========================
+# High-volume artifact dumps
+bodies/
+cc_bodies/
+wayback_bodies/
+harvest/
+uca_out/
+uca_src/
+passive_enum_phase1/
+phase*_outputs/
+
+# EnhancedRecon pipeline outputs
+EnhancedRecon/out/
+EnhancedRecon/passive_enum_phase1/
+EnhancedRecon/phase1_iter_*/
+EnhancedRecon/recon_logs/
+EnhancedRecon/results/
+EnhancedRecon/scans/
+EnhancedRecon/harvest/
+EnhancedRecon/analysis/
+EnhancedRecon/uca_out/
+
+# Third-party tool binaries downloaded by install scripts
+EnhancedRecon/tools/bin/
+
+# =========================
+# Dynamic scope/config files (target-specific; do not commit)
+# =========================
+EnhancedRecon/allowed_exact_hosts.txt
+EnhancedRecon/allowed_suffixes.txt
+EnhancedRecon/out_of_scope_hosts.txt
+EnhancedRecon/orgs.txt
+EnhancedRecon/known_domains.txt
+
+# =========================
+# Large downloaded assets / wordlists (optional)
+# =========================
+wordlists/
+*.bin
+*.tar.gz
+*.zip

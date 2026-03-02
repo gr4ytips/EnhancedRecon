@@ -1,0 +1,41 @@
+rules:
+  - id: react-router-admin
+    patterns:
+      - pattern-inside: |
+          <Route ... path="..." ... />
+      - pattern-regex: "(/admin|/dashboard|/config|/superuser)"
+    message: "Potential Hidden Admin Route (React)"
+    languages: [javascript, typescript, tsx, jsx]
+    severity: WARNING
+
+  - id: vue-router-admin
+    patterns:
+      - pattern: |
+          {path: "...", ...}
+      - pattern-regex: "(/admin|/dashboard|/config)"
+    message: "Potential Hidden Admin Route (Vue)"
+    languages: [javascript, typescript]
+    severity: WARNING
+
+  - id: angular-guard-bypass
+    patterns:
+      - pattern: "canActivate: [...]"
+    message: "Angular Auth Guard detected - Review for Logic Bypass"
+    languages: [javascript, typescript]
+    severity: INFO
+
+  - id: hardcoded-secret-keys
+    patterns:
+      - pattern-either:
+          - pattern: "const $KEY = '...'"
+          - pattern: "let $KEY = '...'"
+          - pattern: "var $KEY = '...'"
+      - metavariable-regex:
+          metavariable: '$KEY'
+          regex: '(?i)(api_key|secret|token|auth|password|passwd)'
+      - metavariable-regex:
+          metavariable: '...'
+          regex: '[A-Za-z0-9+/=]{20,}'
+    message: "High-Entropy Hardcoded Secret"
+    languages: [javascript, typescript]
+    severity: ERROR

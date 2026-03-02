@@ -1,0 +1,57 @@
+rules:
+  # 1. DOM XSS: Dangerous React Sink
+  - id: react-dangerously-set-inner-html
+    patterns:
+      - pattern: "<$TAG ... dangerouslySetInnerHTML={...} ... />"
+    message: "Potential DOM XSS: dangerouslySetInnerHTML used. Verify input sanitization."
+    languages: [javascript, typescript, tsx, jsx]
+    severity: WARNING
+
+  # 2. DOM XSS: Native Sinks using URL sources
+  - id: dom-xss-native
+    patterns:
+      - pattern-either:
+          - pattern: "document.body.innerHTML = $SOURCE"
+          - pattern: "document.write($SOURCE)"
+          - pattern: "eval($SOURCE)"
+      - metavariable-regex:
+          metavariable: '$SOURCE'
+          regex: '.*(location\.|window\.name|document\.referrer).*'
+    message: "High Confidence DOM XSS: Unsanitized URL data flowing into DOM sink."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # 3. Open Redirect
+  - id: unsafe-location-assignment
+    patterns:
+      - pattern-inside: |
+          $VAR = new URLSearchParams(...).get('...');
+          ...
+      - pattern: "window.location = $VAR"
+    message: "Potential Open Redirect: URL parameter assigned directly to window.location."
+    languages: [javascript, typescript]
+    severity: WARNING
+
+  # 4. Prototype Pollution Candidate
+  - id: prototype-pollution-assignment
+    patterns:
+      - pattern: "$OBJ[$KEY] = $VAL"
+      - pattern-inside: |
+          function $FUNC(..., $KEY, ...) {
+            ...
+          }
+    message: "Manual object assignment detected. Check for Prototype Pollution (recursive merge)."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  # 5. Hidden Parameters (Mass Assignment)
+  - id: interesting-json-params
+    patterns:
+      - pattern-either:
+          - pattern: "{ ..., 'role': '...', ... }"
+          - pattern: "{ ..., 'is_admin': ..., ... }"
+          - pattern: "{ ..., 'permissions': ..., ... }"
+          - pattern: "{ ..., 'debug': ..., ... }"
+    message: "Sensitive JSON key detected. Check for Mass Assignment vulnerabilities."
+    languages: [javascript, typescript]
+    severity: INFO

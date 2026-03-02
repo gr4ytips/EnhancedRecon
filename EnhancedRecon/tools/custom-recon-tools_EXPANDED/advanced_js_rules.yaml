@@ -1,0 +1,146 @@
+rules:
+  # ==========================================
+  # SECTION 1: AUTH BYPASS & LOGIC
+  # ==========================================
+  - id: router-admin-routes
+    patterns:
+      - pattern-either:
+          - pattern: '<Route ... path="$PATH" ... />'
+          - pattern: '{path: "$PATH", ...}'
+      - metavariable-regex:
+          metavariable: '$PATH'
+          regex: '(?i)(/admin|/dashboard|/config|/superuser|/console)'
+    message: "High-Value Route detected: $PATH. Check if it's properly protected."
+    languages: [javascript, typescript, tsx, jsx]
+    severity: WARNING
+
+  - id: angular-can-activate
+    patterns:
+      - pattern: "canActivate: [...]"
+    message: "Angular Auth Guard detected. Review logic for bypass."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  - id: unsafe-postmessage
+    patterns:
+      - pattern-inside: |
+          window.addEventListener('message', function($EVENT) { ... })
+      - pattern-not-inside: |
+          if ($EVENT.origin === '...') { ... }
+    message: "postMessage listener without clear origin check."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  # ==========================================
+  # SECTION 2: VULNERABILITIES (XSS, REDIRECTS)
+  # ==========================================
+  - id: react-dangerously-set-inner-html
+    patterns:
+      - pattern: "<$TAG ... dangerouslySetInnerHTML={...} ... />"
+    message: "Potential DOM XSS: dangerouslySetInnerHTML used."
+    languages: [javascript, typescript, tsx, jsx]
+    severity: WARNING
+
+  - id: dom-xss-native
+    patterns:
+      - pattern-either:
+          - pattern: "document.body.innerHTML = $SOURCE"
+          - pattern: "document.write($SOURCE)"
+          - pattern: "eval($SOURCE)"
+      - metavariable-regex:
+          metavariable: '$SOURCE'
+          regex: '.*(location\.|window\.name|document\.referrer).*'
+    message: "High Confidence DOM XSS: URL data flowing into DOM sink."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  - id: unsafe-location-assignment
+    patterns:
+      - pattern-inside: |
+          $VAR = new URLSearchParams(...).get('...');
+          ...
+      - pattern: "window.location = $VAR"
+    message: "Potential Open Redirect: URL param assigned to window.location."
+    languages: [javascript, typescript]
+    severity: WARNING
+
+  - id: prototype-pollution-assignment
+    patterns:
+      - pattern: "$OBJ[$KEY] = $VAL"
+      - pattern-inside: |
+          function $FUNC(..., $KEY, ...) { ... }
+    message: "Manual object assignment. Check for Prototype Pollution."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  - id: interesting-json-params
+    patterns:
+      - pattern-either:
+          - pattern: "{ ..., 'role': '...', ... }"
+          - pattern: "{ ..., 'is_admin': ..., ... }"
+          - pattern: "{ ..., 'permissions': ..., ... }"
+    message: "Sensitive JSON key detected (Mass Assignment candidate)."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  # ==========================================
+  # SECTION 3: SECRETS & INFRASTRUCTURE (UPDATED)
+  # ==========================================
+  - id: hardcoded-secret-high-entropy
+    patterns:
+      - pattern-either:
+          - pattern: "const $KEY = '$VAL'"
+          - pattern: "let $KEY = '$VAL'"
+      - metavariable-regex:
+          metavariable: '$KEY'
+          regex: '(?i)(api_key|token|secret|auth|password)'
+      - metavariable-regex:
+          metavariable: '$VAL'
+          regex: '[A-Za-z0-9+/=]{20,}'
+    message: "Hardcoded High-Entropy Secret found in $KEY."
+    languages: [javascript, typescript]
+    severity: ERROR
+
+  - id: internal-dependency-leak
+    patterns:
+      - pattern-either:
+          - pattern: 'import ... from "$PKG"'
+          - pattern: 'require("$PKG")'
+    metavariable-regex:
+      metavariable: '$PKG'
+      regex: '^@[a-zA-Z0-9-_]+/'
+    message: "Scoped package detected: $PKG (Dependency Confusion risk)."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  # [NEW] Internal IP/Domain Leak (SSRF Hints)
+  - id: internal-network-leak
+    patterns:
+      - pattern-regex: "(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})"
+    message: "Potential Internal IP Address found. Good candidate for SSRF."
+    languages: [javascript, typescript]
+    severity: INFO
+
+  # [NEW] Insecure Storage of Sensitive Data
+  - id: insecure-local-storage
+    patterns:
+      - pattern-either:
+          - pattern: "localStorage.setItem('$KEY', ...)"
+          - pattern: "sessionStorage.setItem('$KEY', ...)"
+      - metavariable-regex:
+          metavariable: '$KEY'
+          regex: '(?i)(token|auth|password|user|session)'
+    message: "Sensitive data written to LocalStorage. Check for XSS vectors."
+    languages: [javascript, typescript]
+    severity: WARNING
+
+  # [NEW] Debug/Dev Logic Leftovers
+  - id: debug-logic-leftover
+    patterns:
+      - pattern-either:
+          - pattern: "debugger;"
+          - pattern: "window.testMode = true"
+          - pattern: "window.debug = true"
+    message: "Debug logic left in production code."
+    languages: [javascript, typescript]
+    severity: INFO
