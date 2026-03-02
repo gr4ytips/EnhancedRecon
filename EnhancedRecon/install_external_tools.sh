@@ -25,10 +25,11 @@ go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/tomnomnom/assetfinder@latest
 go install -v github.com/owasp-amass/amass/v4/...@latest
+go install -v github.com/gwen001/github-subdomains@latest
 
 echo
 echo "[*] Verifying tools..."
-for t in dnsx subfinder httpx assetfinder amass; do
+for t in dnsx subfinder httpx assetfinder amass github-subdomains; do
   if command -v "$t" >/dev/null 2>&1; then
     echo " - $t: OK ($(command -v "$t"))"
   else
