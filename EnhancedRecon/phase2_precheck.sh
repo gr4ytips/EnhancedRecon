@@ -201,6 +201,16 @@ else
   ok "Semgrep rules present ($RULES_FILE)"
 fi
 
+# UCA / code_analyzer semgrep ruleset (required if uca-enable-semgrep=yes)
+UCA_SEMGREP_RULES_DIR="${UCA_SEMGREP_RULES_DIR:-$HOME/.local/share/code_analyzer/semgrep-rules}"
+if [[ -d "$UCA_SEMGREP_RULES_DIR" ]] && ls -1 "$UCA_SEMGREP_RULES_DIR" >/dev/null 2>&1; then
+  ok "UCA semgrep ruleset present ($UCA_SEMGREP_RULES_DIR)"
+else
+  bad "UCA semgrep ruleset missing ($UCA_SEMGREP_RULES_DIR) -> UCA may prompt/abort"
+  need_fix=1
+fi
+
+
 INSTALL_SCRIPT_FALLBACK="$SCRIPT_DIR/phase2_install.sh"
 [[ -f "$INSTALL_SCRIPT_FALLBACK" ]] || INSTALL_SCRIPT_FALLBACK="$ROOT/phase2_install.sh"
 
